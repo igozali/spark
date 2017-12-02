@@ -38,6 +38,8 @@ import static org.apache.parquet.format.converter.ParquetMetadataConverter.NO_FI
 import static org.apache.parquet.format.converter.ParquetMetadataConverter.range;
 import static org.apache.parquet.hadoop.ParquetFileReader.readFooter;
 import static org.apache.parquet.hadoop.ParquetInputFormat.getFilter;
+import static org.apache.parquet.hadoop.ParquetInputFormat.STATS_FILTERING_ENABLED;
+import static org.apache.parquet.hadoop.ParquetInputFormat.DICTIONARY_FILTERING_ENABLED;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
@@ -50,6 +52,7 @@ import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.parquet.column.values.ValuesReader;
 import org.apache.parquet.column.values.rle.RunLengthBitPackingHybridDecoder;
 import org.apache.parquet.filter2.compat.FilterCompat;
+import org.apache.parquet.filter2.compat.RowGroupFilter;
 import org.apache.parquet.hadoop.BadConfigurationException;
 import org.apache.parquet.hadoop.ParquetFileReader;
 import org.apache.parquet.hadoop.ParquetInputFormat;
@@ -104,9 +107,26 @@ public abstract class SpecificParquetRecordReaderBase<T> extends RecordReader<Vo
     if (rowGroupOffsets == null) {
       // then we need to apply the predicate push down filter
       footer = readFooter(configuration, file, range(split.getStart(), split.getEnd()));
-      MessageType fileSchema = footer.getFileMetaData().getSchema();
       FilterCompat.Filter filter = getFilter(configuration);
-      blocks = filterRowGroups(filter, footer.getBlocks(), fileSchema);
+
+      // Generate a temporary ParquetFileReader to filter row groups.
+      ParquetFileReader _reader = ParquetFileReader.open(configuration, file, footer);
+
+      // based on ParquetFileReader.filterRowGroups()
+      // unfortunately the method above method and some of the constants below are
+      // package-level, so I'm setting the default values based on what it currently
+      // is set to.
+      List<RowGroupFilter.FilterLevel> levels = new ArrayList<RowGroupFilter.FilterLevel>();
+
+      if (configuration.getBoolean(STATS_FILTERING_ENABLED, true)) {
+        levels.add(RowGroupFilter.FilterLevel.STATISTICS);
+      }
+
+      if (configuration.getBoolean(DICTIONARY_FILTERING_ENABLED, false)) {
+        levels.add(RowGroupFilter.FilterLevel.DICTIONARY);
+      }
+
+      blocks = filterRowGroups(levels, filter, footer.getBlocks(), _reader);
     } else {
       // otherwise we find the row groups that were selected on the client
       footer = readFooter(configuration, file, NO_FILTER);
